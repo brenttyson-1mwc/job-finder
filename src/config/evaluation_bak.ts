@@ -14,7 +14,7 @@ export interface EvaluationFilter {
   prompt: string;
 }
 
-// Hard gates that MUST pass (AND logic) - runs first
+// Hard gates that MUST pass (AND logic)
 const EVALUATION_FILTERS: EvaluationFilter[] = [
   {
     name: "location-requirement",
@@ -52,59 +52,38 @@ A job FAILS if:
   },
 ];
 
-// Scoring profiles (OR logic) - if ANY profile accepts, job passes
+// Scoring profiles (OR logic)
 export const EVALUATION_PROFILES: EvaluationProfile[] = [
   {
-    name: "digital-marketing-manager-small-business",
+    name: "digital-marketing-manager-fit",
     prompt: `You evaluate job listings for a Digital Marketing Manager role. The candidate has 12+ years of digital marketing experience, specializes in GEO (local search marketing) and AI integration, and is based in Phoenix, Arizona but open to remote.
-
-CRITICAL PREFERENCE: This candidate strongly prefers small businesses (11-50 employees). Large enterprises score significantly lower.
 
 Score this job 0-100 based on fit. A score of 60+ means it's worth reviewing.
 
-SCORING GUIDELINES:
-
-HIGHEST SCORES (85-100) if:
-- Company size 11-50 employees (small business/startup culture)
+HIGHER SCORES (80+) if:
 - Explicitly mentions digital marketing, demand generation, or growth marketing
 - Remote-first or Phoenix-based
 - Salary range $75k-$120k+
 - Values GEO, SEO/SEM, or AI/automation experience
-- Mentions marketing tech stack (HubSpot, Marketo, GA4, etc.) or analytics
+- Mentions marketing tech stack or analytics
+- Senior or manager level (not junior)
 
-VERY GOOD SCORES (75-84) if:
-- Company size 11-50 employees
-- Digital marketing focus with most of the above
-- Missing one secondary requirement but otherwise excellent fit
-
-GOOD SCORES (65-74) if:
-- Company size 51-100 employees (still small/mid-market)
-- Strong digital marketing fit
-- Otherwise meets criteria
-
-MEDIOCRE SCORES (60-64) if:
-- Company size 101-200 employees
-- Digital marketing role but less specialized
-- Salary slightly out of range but otherwise good
-- Otherwise acceptable but not ideal
+MEDIUM SCORES (60-79) if:
+- Digital marketing focus but missing one key requirement
+- Broader "marketing manager" role that could include digital
+- Salary slightly below/above range but otherwise strong fit
 
 LOWER SCORES (below 60) if:
-- Large enterprise (200+ employees) - score penalty applies
+- Primarily sales, account management, or partnership focused
+- Requires specific industry experience (healthcare, finance) that's a poor fit
+- Entry-level or internship
 - On-site only in non-Arizona location
-- Role is Manager level or above but for general "Marketing Manager" (not digital-focused)
-- Entry-level or requires junior hiring experience
 - No mention of marketing technology or analytics
-- Salary significantly below $75k
 
-AUTOMATIC REJECTION (below 40) if:
-- Enterprise company (500+ employees)
-- Sales/Account Executive focus instead of marketing
-- Requires hands-on coding or full-stack development
-
-Respond with ONLY a JSON object, no markdown:
+Respond with ONLY a JSON object:
 {
   "score": <0-100>,
-  "reasoning": "<one sentence max explaining score and company size impact>",
+  "reasoning": "<one sentence explaining the score>",
   "pass": <true if score >= 60, false otherwise>
 }`,
   },
@@ -112,8 +91,4 @@ Respond with ONLY a JSON object, no markdown:
 
 export function getEvaluationFilters(): EvaluationFilter[] {
   return EVALUATION_FILTERS;
-}
-
-export function getEvaluationProfiles(): EvaluationProfile[] {
-  return EVALUATION_PROFILES;
 }

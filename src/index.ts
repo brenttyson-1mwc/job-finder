@@ -1,3 +1,5 @@
+import dotenv from 'dotenv';
+dotenv.config();
 import { isRetryableJina, jinaBreaker, jinaSearchSemaphore, withRetry } from "./concurrency";
 import { config } from "./config";
 import { getEvaluationFilters } from "./config/evaluation";
@@ -96,17 +98,51 @@ async function main() {
   }
 
   log.info({ uniqueUrls: urlMap.size, searchErrors }, "all searches complete");
+  
+  // Phase 1b: RemoteOK and Wellfound searches
+log.info("searching RemoteOK and Wellfound");
+
+const { searchRemoteOK, searchWellfound } = await import("./pipeline/search");
+
+const [remoteOKJobs, wellfoundJobs] = await Promise.all([
+  searchRemoteOK().catch((err) => {
+    log.error({ err }, "RemoteOK search failed");
+    return [];
+  }),
+  searchWellfound().catch((err) => {
+    log.error({ err }, "Wellfound search failed");
+    return [];
+  }),
+]);
+
+const allDirectJobs = [...remoteOKJobs, ...wellfoundJobs];
+log.info({ remoteOK: remoteOKJobs.length, wellfound: wellfoundJobs.length }, "direct job sources complete");
 
   // Phase 2: Parallel URL processing
   const seenUrls = new Set<string>();
 
   log.info({ urls: urlMap.size }, "phase 2: processing urls");
 
-  const processResults = await Promise.allSettled(
-    Array.from(urlMap.entries()).map(([url, keyword]) =>
-      processUrl(url, keyword, { notion, config, syncer, seenUrls, tracker, filters }),
-    ),
-  );
+const allUrlsToProcess = Array.from(urlMap.entries()).map(([url, keyword]) =>
+  processUrl(url, keyword, { notion, config, syncer, seenUrls, tracker, filters }),
+);
+
+// Add direct jobs from RemoteOK/Wellfound
+const directJobsToProcess = allDirectJobs.map((job) =>
+  (async () => {
+    const result = await processUrl(job.url, job.title, {
+      notion,
+      config,
+      syncer,
+      seenUrls,
+      tracker,
+      filters,
+    });
+    return result;
+  })(),
+);
+
+const processResults = await Promise.allSettled([...allUrlsToProcess, ...directJobsToProcess]);
 
   // Aggregate stats
   const stats: ScrapeStats = {

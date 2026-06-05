@@ -1,0 +1,26 @@
+name: Daily Job Scrape
+
+on:
+  schedule:
+    - cron: '0 8 * * *'  # 8 AM UTC daily
+  workflow_dispatch:
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+      
+      - run: npm install
+      
+      - name: Run job scraper
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
+          JINA_API_KEY: ${{ secrets.JINA_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          LLM_MODEL: google/gemini-2.5-flash
+        run: npm run scrape

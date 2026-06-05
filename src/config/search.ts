@@ -1,42 +1,32 @@
 export const SEARCH_KEYWORDS = [
-  // Crypto/Web3 - TS/Node
-  "senior backend engineer crypto",
-  "senior fullstack engineer web3",
-  "senior typescript engineer blockchain",
-  "lead backend engineer defi",
-  "senior software engineer defi",
-  "senior software engineer web3",
-  "typescript engineer crypto",
-  "node.js engineer blockchain",
-  "senior engineer solana",
-  "senior engineer ethereum",
-  "fullstack engineer defi",
-  "backend engineer blockchain infrastructure",
-  "distributed systems engineer crypto",
-  "distributed systems engineer web3",
-  // Non-crypto distributed systems - TS/Node
-  "distributed systems engineer typescript",
-  "distributed systems engineer node.js",
-  "backend engineer real-time systems typescript",
-  "senior backend engineer event-driven typescript",
-  "senior backend engineer message queue",
-  // Fintech/trading infra - TS/Node
-  "backend engineer trading platform typescript",
-  "backend engineer market data",
-  "senior engineer fintech typescript",
-  "real-time systems engineer fintech",
-  "backend engineer quantitative finance",
-  // AI engineering
-  "senior AI engineer",
-  "senior engineer LLM",
-  "senior backend engineer AI",
-  "AI infrastructure engineer",
-  "senior engineer RAG",
-  "senior engineer AI agents",
-  "fullstack engineer AI",
-  "senior engineer vector database",
-  "senior engineer prompt engineering",
-  "senior engineer AI platform",
+  // Direct role matches
+  "Digital Marketing Manager",
+  "Senior Digital Marketing Manager",
+  "Digital Marketing Manager remote",
+  "Digital Marketing Manager Phoenix",
+  
+  // Title variations
+  "Marketing Manager digital",
+  "Manager Digital Marketing",
+  "Digital Marketing Director",
+  "Senior Marketing Manager",
+  
+  // GEO/AI focus (your specialty)
+  "GEO Marketing Manager",
+  "AI Marketing Manager",
+  "Marketing Manager AI tools",
+  "Marketing Manager SEO SEM",
+  
+  // Channel-specific (common DMM responsibilities)
+  "Demand Generation Manager",
+  "Performance Marketing Manager",
+  "Growth Marketing Manager",
+  "Marketing Operations Manager",
+  
+  // Broader catch
+  "Marketing Manager",
+  "Senior Marketing Manager",
+  "Director Marketing",
 ];
 
 export const SEARCH_DOMAINS = [
@@ -44,4 +34,12 @@ export const SEARCH_DOMAINS = [
   "jobs.lever.co",
   "boards.greenhouse.io",
   "apply.workable.com",
+];
+
+// Optional: Add companies you want to prioritize (if you have target companies)
+export const TARGET_COMPANIES = [
+  // Add company names here if you have dream companies
+  // "Stripe",
+  // "Linear",
+  // "Vercel",
 ];
