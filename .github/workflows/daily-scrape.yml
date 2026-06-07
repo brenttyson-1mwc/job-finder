@@ -2,17 +2,17 @@ name: Daily Job Scrape
 
 on:
   schedule:
-    - cron: '0 8 * * *'  # 8 AM UTC daily
+    - cron: '0 8 * * *'
   workflow_dispatch:
 
 jobs:
   scrape:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-node@v3
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
-          node-version: '18'
+          node-version: '20'
       
       - run: npm install
       
