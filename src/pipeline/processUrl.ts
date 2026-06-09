@@ -1,74 +1,10 @@
-// Add this import at the top:
-import type { DiscoveredJob } from "./discover";
-
-// Add this new function (keep processUrl for backward compat if needed):
-export async function processDiscoveredJob(
-  job: DiscoveredJob,
-  ctx: ProcessContext,
-): Promise<ProcessResult> {
-  const { notion, config, syncer, seenUrls, tracker } = ctx;
-  const cache = syncer.cache;
-
-  if (seenUrls.has(job.url)) return "skipped";
-  seenUrls.add(job.url);
-
-  if (cache.existingUrls.has(job.url)) {
-    log.debug({ url: job.url }, "skipped (exists in cache)");
-    return "skipped";
-  }
-
-  // Build a JobListing directly from ATS data — no Jina reader call
-  const listing: JobListing = {
-    title: job.title,
-    company: job.company,
-    url: job.url,
-    source: detectSource(job.url),
-    keywordsMatched: [job.keyword],
-    datePosted: null,
-    dateScraped: new Date().toISOString().split("T")[0] ?? "",
-    description: job.description,
-    location: job.location,
-    profile: "",
-  };
-
-  // ATS enrichment — same as before, fills workplaceType etc.
-  if (config.enableAtsEnrichment) {
-    const atsData = await atsApiSemaphore.run(() =>
-      atsApiRateLimiter.run(() => fetchAtsData(job.url, { title: job.title })),
-    );
-    if (atsData) {
-      log.debug({ url: job.url, source: atsData.source }, "ats enriched");
-      listing.description = `${formatAtsBlock(atsData)}\n\n${listing.description}`;
-      const atsCheck = atsStructuralFilter(atsData);
-      if (!atsCheck.pass) {
-        log.info({ url: job.url, reason: atsCheck.reason }, "rejected (ats)");
-        await insertJob(notion, config.notionDatabaseId, listing, "Auto-Rejected");
-        return "rejected";
-      }
-    }
-  }
-
-  // Structural filter, evaluate, enrich, dedup — same as processUrl
-  const structural = structuralFilter(listing);
-  if (!structural.pass) {
-    log.info({ url: job.url, reason: structural.reason }, "rejected (structural)");
-    await insertJob(notion, config.notionDatabaseId, listing, "Auto-Rejected");
-    return "rejected";
-  }
-
-  // ... (rest is identical to processUrl from the evaluate step onward)
-  // Copy lines 118–196 from processUrl verbatim, replacing `job` with `listing`
-}
 import {
-  atsApiRateLimiter,
-  atsApiSemaphore,
-  isRetryableJina,
-  isRetryableLLM,
-  jinaBreaker,
-  jinaReaderSemaphore,
-  llmBreaker,
-  llmSemaphore,
-  withRetry,
+    atsApiRateLimiter,
+    atsApiSemaphore,
+    isRetryableLLM,
+    llmBreaker,
+    llmSemaphore,
+    withRetry,
 } from "../concurrency";
 import type { JobFinderConfig } from "../config";
 import type { EvaluationFilter } from "../config/evaluation";
@@ -77,16 +13,18 @@ import { atsStructuralFilter, fetchAtsData, formatAtsBlock } from "../services/a
 import { insertJob, type ResilientNotionClient } from "../services/notion";
 import type { NotionCacheUpdater } from "../services/notionCache";
 import type { TokenTracker } from "../services/tokenTracker";
+import type { JobListing } from "../types";
 import { checkFuzzyDuplicate } from "./dedup";
+import type { DiscoveredJob } from "./discover";
 import { enrichJob } from "./enrich";
 import { evaluateJob } from "./evaluate";
-import { parseJobDetails, scrapeJobPage } from "./scrape";
+import { detectSource } from "./scrape";
 import { structuralFilter } from "./structuralFilter";
 
 const log = logger.child({ component: "processUrl" });
 
 export type ProcessResult =
-  | "inserted"
+    | "inserted"
   | "rejected"
   | "duplicated"
   | "skipped"
@@ -95,184 +33,164 @@ export type ProcessResult =
   | "errored";
 
 export interface ScrapeStats {
-  inserted: number;
-  skipped: number;
-  companyApplied: number;
-  rejected: number;
-  archived: number;
-  duplicated: number;
-  errored: number;
+    inserted: number;
+    skipped: number;
+    companyApplied: number;
+    rejected: number;
+    archived: number;
+    duplicated: number;
+    errored: number;
 }
 
 export interface ProcessContext {
-  notion: ResilientNotionClient;
-  config: JobFinderConfig;
-  syncer: NotionCacheUpdater;
-  seenUrls: Set<string>;
-  tracker?: TokenTracker;
-  filters?: EvaluationFilter[];
+    notion: ResilientNotionClient;
+    config: JobFinderConfig;
+    syncer: NotionCacheUpdater;
+    seenUrls: Set<string>;
+    tracker?: TokenTracker;
+    filters?: EvaluationFilter[];
 }
 
-export async function processUrl(
-  url: string,
-  keyword: string,
-  ctx: ProcessContext,
-): Promise<ProcessResult> {
-  const { notion, config, syncer, seenUrls, tracker } = ctx;
-  const cache = syncer.cache;
+export async function processDiscoveredJob(
+    job: DiscoveredJob,
+    ctx: ProcessContext,
+  ): Promise<ProcessResult> {
+    const { notion, config, syncer, seenUrls, tracker } = ctx;
+    const cache = syncer.cache;
 
-  // In-run dedup
-  if (seenUrls.has(url)) return "skipped";
-  seenUrls.add(url);
+  if (seenUrls.has(job.url)) return "skipped";
+    seenUrls.add(job.url);
 
-  // Cache-based URL dedup
-  if (cache.existingUrls.has(url)) {
-    log.debug({ url }, "skipped (exists in cache)");
-    return "skipped";
+  if (cache.existingUrls.has(job.url)) {
+        log.debug({ url: job.url }, "skipped (exists in cache)");
+        return "skipped";
   }
 
-  // Scrape
-  const markdown = await jinaReaderSemaphore.run(() =>
-    jinaBreaker.run(() =>
-      withRetry(() => scrapeJobPage(url, config), {
-        shouldRetry: isRetryableJina,
-        onRetry: (a) => log.warn({ url, attempt: a }, "jina scrape retry"),
-      }),
-    ),
-  );
-  const job = parseJobDetails(markdown, url, keyword);
+  if (cache.blockedCompanies.has(job.company)) {
+        log.info({ url: job.url, company: job.company }, "skipped (company blocked)");
+        return "skipped";
+  }
 
-  // ATS-native enrichment — query the ATS public API for clean structured
-  // location/workplaceType/country data and prepend it to the body before the
-  // LLM eval. Failures fall back to Jina-only.
+  if (cache.recentAppCompanies.has(job.company)) {
+        log.info({ url: job.url, company: job.company }, "skipped (applied recently)");
+        return "companyApplied";
+  }
+
+  const listing: JobListing = {
+        title: job.title,
+        company: job.company,
+        url: job.url,
+        source: detectSource(job.url),
+        keywordsMatched: [job.keyword],
+        datePosted: null,
+        dateScraped: new Date().toISOString().split("T")[0] ?? "",
+        description: job.description,
+        location: job.location,
+        profile: "",
+  };
+
+  // ATS enrichment — fills workplaceType, structured location data
   if (config.enableAtsEnrichment) {
-    const atsData = await atsApiSemaphore.run(() =>
-      atsApiRateLimiter.run(() => fetchAtsData(url, { title: job.title })),
-    );
-    if (atsData) {
-      log.debug({ url, source: atsData.source }, "ats enriched");
-      job.description = `${formatAtsBlock(atsData)}\n\n${job.description}`;
+        const atsData = await atsApiSemaphore.run(() =>
+                atsApiRateLimiter.run(() => fetchAtsData(job.url, { title: job.title })),
+                                                      );
+        if (atsData) {
+                log.debug({ url: job.url, source: atsData.source }, "ats enriched");
+                listing.description = `${formatAtsBlock(atsData)}\n\n${listing.description}`;
+                const atsCheck = atsStructuralFilter(atsData);
+                if (!atsCheck.pass) {
+                          log.info(
+                            { url: job.url, title: listing.title, company: listing.company, reason: atsCheck.reason },
+                                      "rejected (ats)",
+                                    );
+                          await insertJob(notion, config.notionDatabaseId, listing, "Auto-Rejected");
+                          return "rejected";
+                }
+        }
+  }
 
-      // ATS hard reject — workplaceType=OnSite is decided deterministically.
-      // The location-eligibility prompt explicitly tells the LLM to discount
-      // ATS metadata in favour of body text, which means OnSite signals leak
-      // through whenever the body is silent about workplace. Catch them here.
-      const atsCheck = atsStructuralFilter(atsData);
-      if (!atsCheck.pass) {
-        log.info(
-          { url, title: job.title, company: job.company, reason: atsCheck.reason },
-          "rejected (ats)",
-        );
-        await insertJob(notion, config.notionDatabaseId, job, "Auto-Rejected");
-        return "rejected";
-      }
+  const structural = structuralFilter(listing);
+    if (!structural.pass) {
+          log.info(
+            { url: job.url, title: listing.title, company: listing.company, reason: structural.reason },
+                  "rejected (structural)",
+                );
+          await insertJob(notion, config.notionDatabaseId, listing, "Auto-Rejected");
+          return "rejected";
     }
-  }
 
-  // Structural pre-filter — deterministic checks (aggregators, etc.) before paying for LLM eval
-  const structural = structuralFilter(job);
-  if (!structural.pass) {
-    log.info(
-      { url, title: job.title, company: job.company, reason: structural.reason },
-      "rejected (structural)",
-    );
-    await insertJob(notion, config.notionDatabaseId, job, "Auto-Rejected");
-    return "rejected";
-  }
-
-  // Evaluate (profiles run in parallel internally)
   const evaluation = await llmSemaphore.run(() =>
-    llmBreaker.run(() =>
-      withRetry(
-        () =>
-          evaluateJob(job, config.openrouterApiKey, {
-            tracker,
-            filters: ctx.filters,
-            model: config.llmModel,
-          }),
-        {
-          shouldRetry: isRetryableLLM,
-          onRetry: (a) => log.warn({ url, attempt: a }, "llm eval retry"),
-        },
-      ),
-    ),
-  );
+        llmBreaker.run(() =>
+                withRetry(
+                          () =>
+                                      evaluateJob(listing, config.openrouterApiKey, {
+                                                    tracker,
+                                                    filters: ctx.filters,
+                                                    model: config.llmModel,
+                                      }),
+                  {
+                              shouldRetry: isRetryableLLM,
+                              onRetry: (a) => log.warn({ url: job.url, attempt: a }, "llm eval retry"),
+                  },
+                        ),
+                           ),
+                                              );
 
-  if (evaluation.profileName) {
-    job.profile = evaluation.profileName;
-  }
+  if (evaluation.profileName) listing.profile = evaluation.profileName;
 
   if (!evaluation.pass) {
-    log.info(
-      { url, title: job.title, company: job.company, reason: evaluation.reason },
-      "rejected",
-    );
-    await insertJob(notion, config.notionDatabaseId, job, "Auto-Rejected");
-    return "rejected";
+        log.info(
+          { url: job.url, title: listing.title, company: listing.company, reason: evaluation.reason },
+                "rejected",
+              );
+        await insertJob(notion, config.notionDatabaseId, listing, "Auto-Rejected");
+        return "rejected";
   }
 
-  // Enrich
   const enriched = await llmSemaphore.run(() =>
-    llmBreaker.run(() =>
-      withRetry(() => enrichJob(job, config.openrouterApiKey, tracker, config.llmModel), {
-        shouldRetry: isRetryableLLM,
-        onRetry: (a) => log.warn({ url, attempt: a }, "llm enrich retry"),
-      }),
-    ),
-  );
-  job.title = enriched.title;
-  job.company = enriched.company;
-  job.description = enriched.description;
-  job.location = enriched.location;
+        llmBreaker.run(() =>
+                withRetry(
+                          () => enrichJob(listing, config.openrouterApiKey, tracker, config.llmModel),
+                  {
+                              shouldRetry: isRetryableLLM,
+                              onRetry: (a) => log.warn({ url: job.url, attempt: a }, "llm enrich retry"),
+                  },
+                        ),
+                           ),
+                                            );
+    listing.title = enriched.title;
+    listing.company = enriched.company;
+    listing.description = enriched.description;
+    listing.location = enriched.location;
 
-  // Fuzzy dedup (cache-based company lookup, LLM for title comparison)
-  const existingTitles = cache.jobsByCompany.get(job.company) ?? [];
-  if (existingTitles.length > 0) {
-    const dedup = await llmSemaphore.run(() =>
-      withRetry(
-        () =>
-          checkFuzzyDuplicate(
-            job.title,
-            existingTitles,
-            config.openrouterApiKey,
-            tracker,
-            config.llmModel,
-          ),
-        { shouldRetry: isRetryableLLM },
-      ),
-    );
-    if (dedup.isDuplicate) {
-      log.info(
-        { url, title: job.title, company: job.company, matchedTitle: dedup.matchedTitle },
-        "duplicate",
-      );
-      return "duplicated";
+  // Fuzzy dedup against already-seen titles for this company
+  const existingTitles = cache.jobsByCompany.get(listing.company) ?? [];
+    if (existingTitles.length > 0) {
+          const dedup = await llmSemaphore.run(() =>
+                  withRetry(
+                            () =>
+                                        checkFuzzyDuplicate(
+                                                      listing.title,
+                                                      existingTitles,
+                                                      config.openrouterApiKey,
+                                                      tracker,
+                                                      config.llmModel,
+                                                    ),
+                    { shouldRetry: isRetryableLLM },
+                          ),
+                                                   );
+          if (dedup.isDuplicate) {
+                  log.info(
+                    { url: job.url, title: listing.title, matched: dedup.matchedTitle },
+                            "duplicated",
+                          );
+                  return "duplicated";
+          }
     }
-  }
 
-  // Company blocked (cache lookup)
-  if (cache.blockedCompanies.has(job.company)) {
-    log.info({ url, title: job.title, company: job.company }, "archived (company blocked)");
-    await insertJob(notion, config.notionDatabaseId, job, "Archived");
-    return "archived";
-  }
-
-  // Recent application (cache lookup)
-  if (cache.recentAppCompanies.has(job.company)) {
-    log.info({ url, title: job.title, company: job.company }, "company applied");
-    await insertJob(notion, config.notionDatabaseId, job, "Company Applied");
-    syncer.addTitle(job.company, job.title);
-    syncer.addUrl(url);
-    return "companyApplied";
-  }
-
-  // Insert
-  await insertJob(notion, config.notionDatabaseId, job);
-  log.info({ url, title: job.title, company: job.company }, "inserted");
-
-  // Update cache for within-run dedup
-  syncer.addTitle(job.company, job.title);
-  syncer.addUrl(url);
-
-  return "inserted";
+  await insertJob(notion, config.notionDatabaseId, listing, "To Review");
+    syncer.addUrl(listing.url);
+    syncer.addTitle(listing.company, listing.title);
+    log.info({ url: job.url, title: listing.title, company: listing.company }, "inserted");
+    return "inserted";
 }
