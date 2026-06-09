@@ -1,3 +1,27 @@
+// REMOVE these imports:
+// import { searchJobs } from "./pipeline/search";
+// import { isRetryableJina, jinaBreaker, jinaSearchSemaphore, withRetry } from "./concurrency";
+
+// ADD this import:
+import { discoverAllJobs } from "./pipeline/discover";
+import { processDiscoveredJob } from "./pipeline/processUrl";
+
+// REPLACE the entire Phase 1 block (the searchPairs / urlMap section, ~40 lines)
+// with:
+
+log.info({ companies: COMPANY_TARGETS.length }, "phase 1: ATS discovery");
+const discoveredJobs = await discoverAllJobs();
+log.info({ found: discoveredJobs.length }, "phase 1 complete");
+
+// REPLACE Phase 2:
+const seenUrls = new Set<string>();
+log.info({ urls: discoveredJobs.length }, "phase 2: processing jobs");
+
+const processResults = await Promise.allSettled(
+  discoveredJobs.map((job) =>
+    processDiscoveredJob(job, { notion, config, syncer, seenUrls, tracker, filters })
+  ),
+);
 import dotenv from 'dotenv';
 dotenv.config();
 import { isRetryableJina, jinaBreaker, jinaSearchSemaphore, withRetry } from "./concurrency";
