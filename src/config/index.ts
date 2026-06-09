@@ -7,3 +7,4 @@ export {
 } from "./evaluation";
 export { config, type JobFinderConfig } from "./schema";
 export { SEARCH_DOMAINS, SEARCH_KEYWORDS } from "./search";
+export { COMPANY_TARGETS, type CompanyTarget } from "./companies";
