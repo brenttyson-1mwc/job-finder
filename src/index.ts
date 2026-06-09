@@ -1,37 +1,12 @@
-// REMOVE these imports:
-// import { searchJobs } from "./pipeline/search";
-// import { isRetryableJina, jinaBreaker, jinaSearchSemaphore, withRetry } from "./concurrency";
-
-// ADD this import:
-import { discoverAllJobs } from "./pipeline/discover";
-import { processDiscoveredJob } from "./pipeline/processUrl";
-
-// REPLACE the entire Phase 1 block (the searchPairs / urlMap section, ~40 lines)
-// with:
-
-log.info({ companies: COMPANY_TARGETS.length }, "phase 1: ATS discovery");
-const discoveredJobs = await discoverAllJobs();
-log.info({ found: discoveredJobs.length }, "phase 1 complete");
-
-// REPLACE Phase 2:
-const seenUrls = new Set<string>();
-log.info({ urls: discoveredJobs.length }, "phase 2: processing jobs");
-
-const processResults = await Promise.allSettled(
-  discoveredJobs.map((job) =>
-    processDiscoveredJob(job, { notion, config, syncer, seenUrls, tracker, filters })
-  ),
-);
 import dotenv from 'dotenv';
 dotenv.config();
-import { isRetryableJina, jinaBreaker, jinaSearchSemaphore, withRetry } from "./concurrency";
-import { config } from "./config";
+import { config, COMPANY_TARGETS } from "./config";
 import { getEvaluationFilters } from "./config/evaluation";
 import { logger } from "./logger";
-import { type ProcessResult, processUrl, type ScrapeStats } from "./pipeline/processUrl";
+import { discoverAllJobs } from "./pipeline/discover";
+import { type ProcessResult, processDiscoveredJob, type ScrapeStats } from "./pipeline/processUrl";
 import { prune } from "./pipeline/prune";
 import { reconcile } from "./pipeline/reconcile";
-import { searchJobs } from "./pipeline/search";
 import { runPreflight } from "./preflight";
 import { clearAshbyCache } from "./services/ats";
 import { fetchExchangeRates } from "./services/exchangeRates";
@@ -44,18 +19,18 @@ const log = logger.child({ component: "main" });
 const reconcileOnly = process.argv.includes("--reconcile-only");
 
 async function main() {
-  const startTime = Date.now();
-  const notion = createNotionClient(config.notionToken);
-  await runPreflight(notion, config.notionDatabaseId);
+    const startTime = Date.now();
+    const notion = createNotionClient(config.notionToken);
+    await runPreflight(notion, config.notionDatabaseId);
 
   // Reset per-run ATS caches (Ashby returns whole-org listings; we cache them
   // for the run, but stale entries between runs would mask updates).
   clearAshbyCache();
 
   if (reconcileOnly) {
-    const stats = await reconcile(notion, config.notionDatabaseId);
-    log.info({ stats, durationMs: Date.now() - startTime }, "reconciliation complete");
-    return;
+        const stats = await reconcile(notion, config.notionDatabaseId);
+        log.info({ stats, durationMs: Date.now() - startTime }, "reconciliation complete");
+        return;
   }
 
   const preReconcileStats = await reconcile(notion, config.notionDatabaseId, "Pre-scrape");
@@ -66,160 +41,86 @@ async function main() {
 
   // Pre-cache Notion data to avoid per-URL queries
   log.info("building notion cache");
-  const cache = await buildNotionCache(notion, config.notionDatabaseId);
-  log.info(
-    {
-      urls: cache.existingUrls.size,
-      blocked: cache.blockedCompanies.size,
-      recentApps: cache.recentAppCompanies.size,
-      companies: cache.jobsByCompany.size,
-    },
-    "notion cache built",
-  );
+    const cache = await buildNotionCache(notion, config.notionDatabaseId);
+    log.info(
+      {
+              urls: cache.existingUrls.size,
+              blocked: cache.blockedCompanies.size,
+              recentApps: cache.recentAppCompanies.size,
+              companies: cache.jobsByCompany.size,
+      },
+          "notion cache built",
+        );
 
   const rates = await fetchExchangeRates();
-  const filters = getEvaluationFilters(rates);
+    const filters = getEvaluationFilters(rates);
+    const syncer = new NotionCacheUpdater(cache);
+    const tracker = new TokenTracker();
 
-  const syncer = new NotionCacheUpdater(cache);
-  const tracker = new TokenTracker();
+  // Phase 1: Direct ATS API discovery — no Jina search, zero token cost
+  log.info({ companies: COMPANY_TARGETS.length }, "phase 1: ATS discovery");
+    const discoveredJobs = await discoverAllJobs();
+    log.info({ found: discoveredJobs.length }, "phase 1 complete");
 
-  // Phase 1: Parallel search — collect all URLs
-  const searchPairs = config.keywords.flatMap((keyword) =>
-    config.domains.map((domain) => ({ keyword, domain })),
-  );
-
-  log.info({ pairs: searchPairs.length }, "phase 1: searching");
-
-  const urlMap = new Map<string, string>(); // url → keyword
-
-  const searchResults = await Promise.allSettled(
-    searchPairs.map(({ keyword, domain }) =>
-      jinaSearchSemaphore.run(async () => {
-        const urls = await jinaBreaker.run(() =>
-          withRetry(() => searchJobs(keyword, domain, config), {
-            shouldRetry: isRetryableJina,
-            onRetry: (a) => log.warn({ keyword, domain, attempt: a }, "search retry"),
-          }),
-        );
-        log.info({ domain, keyword, urls: urls.length }, "search complete");
-        return { keyword, urls };
-      }),
-    ),
-  );
-
-  let searchErrors = 0;
-  for (const result of searchResults) {
-    if (result.status === "fulfilled") {
-      for (const url of result.value.urls) {
-        if (!urlMap.has(url)) {
-          urlMap.set(url, result.value.keyword);
-        }
-      }
-    } else {
-      log.error({ err: result.reason }, "search failed");
-      searchErrors++;
-    }
-  }
-
-  log.info({ uniqueUrls: urlMap.size, searchErrors }, "all searches complete");
-  
-  // Phase 1b: RemoteOK and Wellfound searches
-log.info("searching RemoteOK and Wellfound");
-
-const { searchRemoteOK, searchWellfound } = await import("./pipeline/search");
-
-const [remoteOKJobs, wellfoundJobs] = await Promise.all([
-  searchRemoteOK().catch((err) => {
-    log.error({ err }, "RemoteOK search failed");
-    return [];
-  }),
-  searchWellfound().catch((err) => {
-    log.error({ err }, "Wellfound search failed");
-    return [];
-  }),
-]);
-
-const allDirectJobs = [...remoteOKJobs, ...wellfoundJobs];
-log.info({ remoteOK: remoteOKJobs.length, wellfound: wellfoundJobs.length }, "direct job sources complete");
-
-  // Phase 2: Parallel URL processing
+  // Phase 2: Process each discovered job
   const seenUrls = new Set<string>();
+    log.info({ urls: discoveredJobs.length }, "phase 2: processing jobs");
 
-  log.info({ urls: urlMap.size }, "phase 2: processing urls");
-
-const allUrlsToProcess = Array.from(urlMap.entries()).map(([url, keyword]) =>
-  processUrl(url, keyword, { notion, config, syncer, seenUrls, tracker, filters }),
-);
-
-// Add direct jobs from RemoteOK/Wellfound
-const directJobsToProcess = allDirectJobs.map((job) =>
-  (async () => {
-    const result = await processUrl(job.url, job.title, {
-      notion,
-      config,
-      syncer,
-      seenUrls,
-      tracker,
-      filters,
-    });
-    return result;
-  })(),
-);
-
-const processResults = await Promise.allSettled([...allUrlsToProcess, ...directJobsToProcess]);
+  const processResults = await Promise.allSettled(
+        discoveredJobs.map((job) =>
+                processDiscoveredJob(job, { notion, config, syncer, seenUrls, tracker, filters }),
+                               ),
+      );
 
   // Aggregate stats
   const stats: ScrapeStats = {
-    inserted: 0,
-    skipped: 0,
-    companyApplied: 0,
-    rejected: 0,
-    archived: 0,
-    duplicated: 0,
-    errored: 0,
+        inserted: 0,
+        skipped: 0,
+        companyApplied: 0,
+        rejected: 0,
+        archived: 0,
+        duplicated: 0,
+        errored: 0,
   };
 
   for (const result of processResults) {
-    if (result.status === "fulfilled") {
-      const key = result.value as ProcessResult;
-      if (key === "companyApplied") stats.companyApplied++;
-      else if (key in stats) stats[key as keyof typeof stats]++;
-    } else {
-      log.error({ err: result.reason }, "url processing failed");
-      stats.errored++;
-    }
+        if (result.status === "fulfilled") {
+                const key = result.value as ProcessResult;
+                if (key === "companyApplied") stats.companyApplied++;
+                else if (key in stats) stats[key as keyof typeof stats]++;
+        } else {
+                log.error({ err: result.reason }, "job processing failed");
+                stats.errored++;
+        }
   }
 
   const postReconcileStats = await reconcile(notion, config.notionDatabaseId, "Post-scrape");
-
-  const tokenSummary = tracker.summary();
+    const tokenSummary = tracker.summary();
 
   log.info({ stats }, "scrape summary");
-  log.info({ reconcile: preReconcileStats }, "pre-scrape reconcile summary");
-  log.info({ reconcile: postReconcileStats }, "post-scrape reconcile summary");
-  log.info({ prune: pruneStats }, "prune summary");
-  log.info({ tokens: tokenSummary }, "token usage summary");
+    log.info({ reconcile: preReconcileStats }, "pre-scrape reconcile summary");
+    log.info({ reconcile: postReconcileStats }, "post-scrape reconcile summary");
+    log.info({ prune: pruneStats }, "prune summary");
+    log.info({ tokens: tokenSummary }, "token usage summary");
 
   if (config.slackWebhookUrl) {
-    await sendRunReport(
-      config.slackWebhookUrl,
-      stats,
-      postReconcileStats,
-      pruneStats,
-      {
-        urlCount: urlMap.size,
-        searchErrors,
-      },
-      Date.now() - startTime,
-      tokenSummary,
-    );
+        await sendRunReport(
+                config.slackWebhookUrl,
+                stats,
+                postReconcileStats,
+                pruneStats,
+          { urlCount: discoveredJobs.length, searchErrors: 0 },
+                Date.now() - startTime,
+                tokenSummary,
+              ).catch((err) => log.warn({ err }, "slack report failed"));
   }
 }
 
 main().catch(async (err) => {
-  log.fatal({ err }, "fatal error");
-  if (config.slackWebhookUrl) {
-    await sendFatalError(config.slackWebhookUrl, err);
-  }
-  process.exit(1);
+    logger.error({ err }, "fatal error");
+    const cfg = (await import("./config")).config;
+    if (cfg.slackWebhookUrl) {
+          await sendFatalError(cfg.slackWebhookUrl, err).catch(() => {});
+    }
+    process.exit(1);
 });
