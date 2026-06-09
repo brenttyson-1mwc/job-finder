@@ -1,3 +1,64 @@
+// Add this import at the top:
+import type { DiscoveredJob } from "./discover";
+
+// Add this new function (keep processUrl for backward compat if needed):
+export async function processDiscoveredJob(
+  job: DiscoveredJob,
+  ctx: ProcessContext,
+): Promise<ProcessResult> {
+  const { notion, config, syncer, seenUrls, tracker } = ctx;
+  const cache = syncer.cache;
+
+  if (seenUrls.has(job.url)) return "skipped";
+  seenUrls.add(job.url);
+
+  if (cache.existingUrls.has(job.url)) {
+    log.debug({ url: job.url }, "skipped (exists in cache)");
+    return "skipped";
+  }
+
+  // Build a JobListing directly from ATS data — no Jina reader call
+  const listing: JobListing = {
+    title: job.title,
+    company: job.company,
+    url: job.url,
+    source: detectSource(job.url),
+    keywordsMatched: [job.keyword],
+    datePosted: null,
+    dateScraped: new Date().toISOString().split("T")[0] ?? "",
+    description: job.description,
+    location: job.location,
+    profile: "",
+  };
+
+  // ATS enrichment — same as before, fills workplaceType etc.
+  if (config.enableAtsEnrichment) {
+    const atsData = await atsApiSemaphore.run(() =>
+      atsApiRateLimiter.run(() => fetchAtsData(job.url, { title: job.title })),
+    );
+    if (atsData) {
+      log.debug({ url: job.url, source: atsData.source }, "ats enriched");
+      listing.description = `${formatAtsBlock(atsData)}\n\n${listing.description}`;
+      const atsCheck = atsStructuralFilter(atsData);
+      if (!atsCheck.pass) {
+        log.info({ url: job.url, reason: atsCheck.reason }, "rejected (ats)");
+        await insertJob(notion, config.notionDatabaseId, listing, "Auto-Rejected");
+        return "rejected";
+      }
+    }
+  }
+
+  // Structural filter, evaluate, enrich, dedup — same as processUrl
+  const structural = structuralFilter(listing);
+  if (!structural.pass) {
+    log.info({ url: job.url, reason: structural.reason }, "rejected (structural)");
+    await insertJob(notion, config.notionDatabaseId, listing, "Auto-Rejected");
+    return "rejected";
+  }
+
+  // ... (rest is identical to processUrl from the evaluate step onward)
+  // Copy lines 118–196 from processUrl verbatim, replacing `job` with `listing`
+}
 import {
   atsApiRateLimiter,
   atsApiSemaphore,
