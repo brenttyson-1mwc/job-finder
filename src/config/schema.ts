@@ -1,3 +1,4 @@
+jinaApiKey: z.string().optional(),
 import { z } from "zod/v4";
 import { SEARCH_DOMAINS, SEARCH_KEYWORDS } from "./search";
 
