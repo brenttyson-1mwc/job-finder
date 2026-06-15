@@ -1,20 +1,18 @@
 name: Daily Job Scrape
-
 on:
   schedule:
     - cron: '0 8 * * *'
   workflow_dispatch:
-
 jobs:
   scrape:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: oven-sh/setup-bun@v2
         with:
-          node-version: '24'
+          bun-version: latest
       
-      - run: npm install
+      - run: bun install
       
       - name: Run job scraper
         env:
@@ -24,4 +22,4 @@ jobs:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           LLM_MODEL: google/gemini-2.5-flash
-        run: npm run scrape
+        run: bun run scrape
