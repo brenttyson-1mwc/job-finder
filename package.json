@@ -20,16 +20,16 @@
   },
   "module": "index.ts",
   "type": "module",
-  "scripts": {
-    "scrape": "npx tsx src/index.ts",
-    "reconcile": "npx tsx src/index.ts --reconcile-only",
-    "test": "node --test",
-    "test:integration": "node --test src/**/__integration__/",
-    "lint": "biome check .",
-    "lint:fix": "biome check --write .",
-    "typecheck": "tsc --noEmit",
-    "prepare": "lefthook install"
-  },
+ "scripts": {
+  "scrape": "bun src/index.ts",
+  "reconcile": "bun src/index.ts --reconcile-only",
+  "test": "bun test",
+  "test:integration": "bun test src/**/__integration__/",
+  "lint": "biome check .",
+  "lint:fix": "biome check --write .",
+  "typecheck": "tsc --noEmit",
+  "prepare": "lefthook install"
+},
   "devDependencies": {
     "@biomejs/biome": "2.4.9",
     "@evilmartians/lefthook": "2.1.4",
