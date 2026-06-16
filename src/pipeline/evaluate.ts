@@ -21,6 +21,7 @@ const log = logger.child({ component: "evaluate" });
 // compatibility layer. Plain JSON prompt is more reliable and cheaper.
 const JSON_INSTRUCTION = `
 Respond with ONLY a valid JSON object. No markdown, no code fences, no explanation.
+Keep the reason field under 20 words.
 Example format:
 {"pass": true, "reason": "Strong match for digital marketing manager role with SEO focus"}
 `;
@@ -45,18 +46,18 @@ ${job.description}
 
 ${JSON_INSTRUCTION}`;
 
-  // Rate limit before each call to stay under Gemini free tier limits
-  await llmRateLimiter.run(async () => {});
-
-  const response = await client.chat.completions.create({
-    model,
-    max_tokens: 256,
-    temperature: options?.temperature ?? 0,
-    messages: [
-      { role: "system", content: criteria.prompt },
-      { role: "user", content: userMessage },
-    ],
-  });
+  // Wrap the actual API call in the rate limiter so it throttles correctly
+  const response = await llmRateLimiter.run(() =>
+    client.chat.completions.create({
+      model,
+      max_tokens: 512,
+      temperature: options?.temperature ?? 0,
+      messages: [
+        { role: "system", content: criteria.prompt },
+        { role: "user", content: userMessage },
+      ],
+    }),
+  );
 
   if (response.usage) {
     tracker?.add(response.model ?? model, "evaluation", {
@@ -80,7 +81,6 @@ ${JSON_INSTRUCTION}`;
     const parsed = JSON.parse(cleaned) as { pass: boolean; reason: string };
     return { pass: Boolean(parsed.pass), reason: parsed.reason ?? "" };
   } catch {
-    // If Gemini returns something unparseable, log it and fail safely
     log.warn({ raw, cleaned }, "could not parse evaluation response — defaulting to reject");
     return { pass: false, reason: `Parse error: ${cleaned.slice(0, 120)}` };
   }
