@@ -24,7 +24,7 @@ export class RateLimiter {
       return;
     }
     const waitMs = ((1 - this.tokens) / this.tokensPerSecond) * 1000;
-    await Bun.sleep(waitMs);
+    await new Promise<void>((resolve) => setTimeout(resolve, waitMs));
     this.refill();
     this.tokens--;
   }
