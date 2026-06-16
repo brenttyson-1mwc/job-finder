@@ -66,11 +66,15 @@ async function main() {
   const seenUrls = new Set<string>();
     log.info({ urls: discoveredJobs.length }, "phase 2: processing jobs");
 
-  const processResults = await Promise.allSettled(
-        discoveredJobs.map((job) =>
-                processDiscoveredJob(job, { notion, config, syncer, seenUrls, tracker, filters }),
-                               ),
-      );
+const processResults: PromiseSettledResult<ProcessResult>[] = [];
+for (const job of discoveredJobs) {
+  const result = await processDiscoveredJob(job, { notion, config, syncer, seenUrls, tracker, filters })
+    .then((value) => ({ status: "fulfilled" as const, value }))
+    .catch((reason) => ({ status: "rejected" as const, reason }));
+  processResults.push(result);
+  // 3 second pause between jobs to stay under Gemini rate limits
+  await new Promise((resolve) => setTimeout(resolve, 3000));
+}
 
   // Aggregate stats
   const stats: ScrapeStats = {
