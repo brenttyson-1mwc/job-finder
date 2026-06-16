@@ -20,8 +20,8 @@ export const jinaReaderSemaphore = new Semaphore(8);
 // Gemini free tier: ~2 RPM per minute on flash, burst carefully.
 // Semaphore of 2 = max 2 concurrent LLM calls at once.
 // RateLimiter of 1 req/s with burst 2 keeps us well under limits.
-export const llmSemaphore = new Semaphore(2);
-export const llmRateLimiter = new RateLimiter(1, 2); // 1 req/s, burst 2
+export const llmSemaphore = new Semaphore(1);
+export const llmRateLimiter = new RateLimiter(0.5, 1); // 1 req/s, burst 2
  
 export const notionRateLimiter = new RateLimiter(3, 3); // 3 req/s, burst 3
 export const jinaBreaker = new CircuitBreaker(5, 30_000);
