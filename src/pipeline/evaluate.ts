@@ -51,6 +51,7 @@ ${JSON_INSTRUCTION}`;
     client.chat.completions.create({
       model,
       max_tokens: 512,
+      stream: false,
       temperature: options?.temperature ?? 0,
       messages: [
         { role: "system", content: criteria.prompt },
