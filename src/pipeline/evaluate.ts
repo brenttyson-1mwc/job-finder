@@ -1,4 +1,3 @@
-import type OpenAI from "openai";
 import {
   EVALUATION_PROFILES,
   type EvaluationCriteria,
@@ -6,6 +5,7 @@ import {
 } from "../config/evaluation";
 import { logger } from "../logger";
 import { getClient } from "../services/llm";
+import { llmRateLimiter } from "../concurrency";
 import type { TokenTracker } from "../services/tokenTracker";
 import type { JobListing } from "../types";
 
@@ -17,27 +17,13 @@ export interface JobEvaluation {
 
 const log = logger.child({ component: "evaluate" });
 
-const EVALUATE_TOOL: OpenAI.ChatCompletionTool = {
-  type: "function",
-  function: {
-    name: "evaluate_job",
-    description: "Submit the evaluation result for a job listing",
-    parameters: {
-      type: "object" as const,
-      properties: {
-        pass: {
-          type: "boolean",
-          description: "Whether the job passes all criteria",
-        },
-        reason: {
-          type: "string",
-          description: "Brief explanation for the decision",
-        },
-      },
-      required: ["pass", "reason"],
-    },
-  },
-};
+// Gemini doesn't reliably honor forced function/tool calls via the OpenAI
+// compatibility layer. Plain JSON prompt is more reliable and cheaper.
+const JSON_INSTRUCTION = `
+Respond with ONLY a valid JSON object. No markdown, no code fences, no explanation.
+Example format:
+{"pass": true, "reason": "Strong match for digital marketing manager role with SEO focus"}
+`;
 
 export async function evaluateSingle(
   job: JobListing,
@@ -47,7 +33,7 @@ export async function evaluateSingle(
   options?: { temperature?: number; model?: string },
 ): Promise<JobEvaluation> {
   const client = getClient(apiKey);
-  const model = options?.model ?? "google/gemini-2.5-flash";
+  const model = options?.model ?? "gemini-2.5-flash";
 
   const userMessage = `Job Title: ${job.title}
 Company: ${job.company}
@@ -55,18 +41,21 @@ Source: ${job.source}
 URL: ${job.url}
 
 Description:
-${job.description}`;
+${job.description}
+
+${JSON_INSTRUCTION}`;
+
+  // Rate limit before each call to stay under Gemini free tier limits
+  await llmRateLimiter.run(async () => {});
 
   const response = await client.chat.completions.create({
     model,
     max_tokens: 256,
-    temperature: options?.temperature,
+    temperature: options?.temperature ?? 0,
     messages: [
       { role: "system", content: criteria.prompt },
       { role: "user", content: userMessage },
     ],
-    tools: [EVALUATE_TOOL],
-    tool_choice: { type: "function", function: { name: "evaluate_job" } },
   });
 
   if (response.usage) {
@@ -75,20 +64,25 @@ ${job.description}`;
       output_tokens: response.usage.completion_tokens,
     });
   } else {
-    log.warn({ model }, "No usage data in response");
+    log.warn({ model }, "no usage data in response");
   }
 
-  const toolCall = response.choices[0]?.message?.tool_calls?.[0];
-  if (!toolCall || toolCall.type !== "function") {
-    throw new Error("Evaluation failed: no function tool_call in response");
-  }
+  const raw = response.choices[0]?.message?.content ?? "";
+
+  // Strip markdown fences if Gemini adds them anyway
+  const cleaned = raw
+    .replace(/^```json\s*/i, "")
+    .replace(/^```\s*/i, "")
+    .replace(/```\s*$/i, "")
+    .trim();
 
   try {
-    return JSON.parse(toolCall.function.arguments) as JobEvaluation;
+    const parsed = JSON.parse(cleaned) as { pass: boolean; reason: string };
+    return { pass: Boolean(parsed.pass), reason: parsed.reason ?? "" };
   } catch {
-    throw new Error(
-      `Evaluation failed: could not parse tool arguments: ${toolCall.function.arguments}`,
-    );
+    // If Gemini returns something unparseable, log it and fail safely
+    log.warn({ raw, cleaned }, "could not parse evaluation response — defaulting to reject");
+    return { pass: false, reason: `Parse error: ${cleaned.slice(0, 120)}` };
   }
 }
 
@@ -113,7 +107,7 @@ export async function evaluateJob(
       ? { temperature: deps.temperature, model: deps.model }
       : undefined;
 
-  // Phase 1: AND filters — run in parallel, reject on first failure in results
+  // Phase 1: AND filters — all must pass
   if (filters.length > 0) {
     const filterResults = await Promise.allSettled(
       filters.map((filter) => evaluate(job, filter, apiKey, tracker, tempOpts)),
@@ -130,7 +124,6 @@ export async function evaluateJob(
 
   // Phase 2: OR profiles — any must pass
   if (profiles.length === 0) {
-    // Filters passed and no profiles configured — job passes filters alone
     return filters.length > 0
       ? { pass: true, reason: "Passed all filters" }
       : { pass: false, reason: "No profiles configured" };
@@ -151,8 +144,6 @@ export async function evaluateJob(
     }
   }
 
-  // If all profiles errored (none fulfilled), surface the first error
-  // so it can be retried by the circuit breaker/retry stack
   const firstError = results.find((r) => r.status === "rejected");
   if (lastRejection.reason === "No profiles matched" && firstError?.status === "rejected") {
     throw firstError.reason;
